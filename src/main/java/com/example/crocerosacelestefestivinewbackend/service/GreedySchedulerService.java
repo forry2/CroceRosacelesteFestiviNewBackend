@@ -32,7 +32,8 @@ public class GreedySchedulerService {
                                    Set<String> pesanti,
                                    LocalDate start,
                                    LocalDate end,
-                                   int minProximityDays) {
+                                   int minProximityDays,
+                                   double alpha) {
         BuiltModel bm = buildUnits(rows, pesanti, start, end);
         log.info("[GREEDY] Units built: {}", bm.units.size());
         List<Map<String, Object>> violations = new ArrayList<>();
@@ -96,11 +97,17 @@ public class GreedySchedulerService {
             }
 
             // Choose least loaded by pesi, then by eventi; tie-break: farthest last assignment (omitted for brevity), then lower id
+            // Score pesato: alpha * L' + (1-alpha) * Emax'
             candidates.sort((a, b) -> {
-                int cmp = Long.compare(pesi[a], pesi[b]);
+                double sa = scoreAfterAssign(bm, assignment, pesi, eventiPerMese, a, u, alpha);
+                double sb = scoreAfterAssign(bm, assignment, pesi, eventiPerMese, b, u, alpha);
+                int cmp = Double.compare(sa, sb);
                 if (cmp != 0) return cmp;
-                cmp = Integer.compare(sum(eventiPerMese.get(a)), sum(eventiPerMese.get(b)));
-                if (cmp != 0) return cmp;
+                // tie-break legacy
+                int cmpW = Long.compare(pesi[a], pesi[b]);
+                if (cmpW != 0) return cmpW;
+                cmpW = Integer.compare(sum(eventiPerMese.get(a)), sum(eventiPerMese.get(b)));
+                if (cmpW != 0) return cmpW;
                 return Integer.compare(a, b);
             });
             if (log.isTraceEnabled()) log.trace("[GREEDY] Candidates sorted {} -> {}", u.id, candidates);
@@ -164,6 +171,43 @@ public class GreedySchedulerService {
 
     private static int sum(int[] a) {
         int s = 0; for (int v : a) s += v; return s;
+    }
+
+    private double scoreAfterAssign(BuiltModel bm,
+                                    Map<String, Integer> assignment,
+                                    long[] pesi,
+                                    Map<Integer, int[]> eventiPerMese,
+                                    int teamCandidate,
+                                    FestivoUnit u,
+                                    double alpha) {
+        // clone light
+        long[] W = Arrays.copyOf(pesi, pesi.length);
+        Map<Integer, int[]> E = new HashMap<>();
+        for (int t = 1; t <= 10; t++) E.put(t, Arrays.copyOf(eventiPerMese.get(t), 12));
+
+        // apply tentative assignment
+        if ("MPB".equals(u.tipo)) {
+            W[teamCandidate] += u.peso;
+            E.get(teamCandidate)[u.month - 1] += 1;
+        } else {
+            W[teamCandidate] += u.peso;
+            E.get(teamCandidate)[u.month - 1] += 1;
+        }
+
+        long maxW = Long.MIN_VALUE, minW = Long.MAX_VALUE, totW = 0;
+        int maxE = Integer.MIN_VALUE, totE = 0;
+        for (int t = 1; t <= 10; t++) {
+            maxW = Math.max(maxW, W[t]);
+            minW = Math.min(minW, W[t]);
+            totW += W[t];
+            int sumE = sum(E.get(t));
+            maxE = Math.max(maxE, sumE);
+            totE += sumE;
+        }
+        double Lprime = totW == 0 ? 0.0 : (double)(maxW - minW) / (double)totW;
+        double EmaxPrime = totE == 0 ? 0.0 : (double)maxE / (double)totE;
+        double score = alpha * Lprime + (1.0 - alpha) * EmaxPrime;
+        return score;
     }
 }
 

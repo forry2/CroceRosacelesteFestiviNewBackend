@@ -34,7 +34,8 @@ public class MilpSchedulerService {
                                    Set<String> pesanti,
                                    LocalDate start,
                                    LocalDate end,
-                                   int minProximityDays) {
+                                   int minProximityDays,
+                                   double alpha) {
         Loader.loadNativeLibraries();
         log.info("[MILP] Building model. rows={} heavy={} period=[{}..{}]", rows.size(), pesanti.size(), start, end);
 
@@ -200,8 +201,15 @@ public class MilpSchedulerService {
 
         // Objective: minimize L (primary) + small weight * Emax (secondary)
         MPObjective obj = solver.objective();
-        obj.setCoefficient(L, 1_000_000);
-        obj.setCoefficient(Emax, 1_000);
+        // Normalizzazione: totale pesi ed eventi
+        long totalPeso = 0; for (FestivoUnit fu : bm.units) totalPeso += fu.peso;
+        int totalEventi = bm.units.size();
+        double wL = (alpha <= 0) ? 0.0 : alpha / Math.max(1.0, (double) Math.max(1, totalPeso));
+        double wE = (alpha >= 1) ? 0.0 : (1.0 - alpha) / Math.max(1.0, (double) Math.max(1, totalEventi));
+        // Poiché l'objective non accetta divisioni direttamente sulle variabili, usiamo pesi scalati
+        double scale = 1e6; // per evitare coefficienti troppo piccoli
+        obj.setCoefficient(L, wL * scale);
+        obj.setCoefficient(Emax, wE * scale);
         obj.setMinimization();
 
         long t0 = System.currentTimeMillis();

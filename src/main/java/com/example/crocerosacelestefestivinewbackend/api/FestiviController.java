@@ -80,14 +80,21 @@ public class FestiviController {
             @RequestParam("file") MultipartFile file,
             @RequestParam("startDate") String startDate,
             @RequestParam("endDate") String endDate,
-            @RequestParam("minProximityDays") Integer minProximityDays
+            @RequestParam("minProximityDays") Integer minProximityDays,
+            @RequestParam(value = "alpha", required = false) Double alpha
     ) {
         long t0 = System.currentTimeMillis();
         LocalDate start = LocalDate.parse(startDate, STRICT_FMT);
         LocalDate end = LocalDate.parse(endDate, STRICT_FMT);
-        log.info("[GREEDY] Request received. file={}, startDate={}, endDate={}, minProximityDays={}", file.getOriginalFilename(), start, end, minProximityDays);
+        double a = alpha == null ? 1.0 : alpha.doubleValue();
+        if (a < 0.0 || a > 1.0) throw new ValidationException(java.util.List.of(java.util.Map.of(
+                "row", 0,
+                "field", "alpha",
+                "message", "alpha deve essere tra 0 e 1"
+        )));
+        log.info("[GREEDY] Request received. file={}, startDate={}, endDate={}, minProximityDays={}, alpha={}", file.getOriginalFilename(), start, end, minProximityDays, a);
         ParseResult parsed = excelParsingService.parse(getStream(file), start, end);
-        GreedySchedulerService.ScheduleResult res = greedySchedulerService.schedule(parsed.rows, parsed.pesanti, start, end, minProximityDays);
+        GreedySchedulerService.ScheduleResult res = greedySchedulerService.schedule(parsed.rows, parsed.pesanti, start, end, minProximityDays, a);
         byte[] xls = excelOutputService.buildOutput(res.rowsMutated, res.assignment, res.pesiPerMese, res.eventiPerMese);
         long dt = System.currentTimeMillis() - t0;
         log.info("[GREEDY] Completed. rows={}, durationMs={}", parsed.rows.size(), dt);
@@ -102,14 +109,21 @@ public class FestiviController {
             @RequestParam("file") MultipartFile file,
             @RequestParam("startDate") String startDate,
             @RequestParam("endDate") String endDate,
-            @RequestParam("minProximityDays") Integer minProximityDays
+            @RequestParam("minProximityDays") Integer minProximityDays,
+            @RequestParam(value = "alpha", required = false) Double alpha
     ) {
         long t0 = System.currentTimeMillis();
         LocalDate start = LocalDate.parse(startDate, STRICT_FMT);
         LocalDate end = LocalDate.parse(endDate, STRICT_FMT);
-        log.info("[MILP] Request received. file={}, startDate={}, endDate={}, minProximityDays={}", file.getOriginalFilename(), start, end, minProximityDays);
+        double a = alpha == null ? 1.0 : alpha.doubleValue();
+        if (a < 0.0 || a > 1.0) throw new ValidationException(java.util.List.of(java.util.Map.of(
+                "row", 0,
+                "field", "alpha",
+                "message", "alpha deve essere tra 0 e 1"
+        )));
+        log.info("[MILP] Request received. file={}, startDate={}, endDate={}, minProximityDays={}, alpha={}", file.getOriginalFilename(), start, end, minProximityDays, a);
         ParseResult parsed = excelParsingService.parse(getStream(file), start, end);
-        MilpSchedulerService.ScheduleResult res = milpSchedulerService.schedule(parsed.rows, parsed.pesanti, start, end, minProximityDays);
+        MilpSchedulerService.ScheduleResult res = milpSchedulerService.schedule(parsed.rows, parsed.pesanti, start, end, minProximityDays, a);
         byte[] xls = excelOutputService.buildOutput(res.rowsMutated, res.assignment, res.pesiPerMese, res.eventiPerMese);
         long dt = System.currentTimeMillis() - t0;
         log.info("[MILP] Completed. rows={}, durationMs={}", parsed.rows.size(), dt);
