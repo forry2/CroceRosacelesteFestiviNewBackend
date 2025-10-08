@@ -13,8 +13,7 @@ public class CorsConfig implements WebMvcConfigurer {
                         "http://localhost:3000",
                         "http://192.168.1.29",
                         "http://192.168.1.29:80",
-                        "http://188.153.17.244:38081",
-                        "http://188.153.17.244:38082"
+                        "https://robybrown.duckdns.org"
                 )
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                 .allowedHeaders("*")

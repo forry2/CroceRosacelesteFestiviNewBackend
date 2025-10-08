@@ -13,6 +13,7 @@ public class FestivoInputRow {
     public int peso; // > 0
     public Optional<Integer> assegnazioneForzata; // 1..10
     public Set<Integer> squadreEscluse; // 1..10
+    public String errorMessage; // Messaggio di errore per questo festivo (se presente)
 }
 
 

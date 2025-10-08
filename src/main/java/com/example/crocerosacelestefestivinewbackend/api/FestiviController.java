@@ -110,20 +110,27 @@ public class FestiviController {
             @RequestParam("startDate") String startDate,
             @RequestParam("endDate") String endDate,
             @RequestParam("minProximityDays") Integer minProximityDays,
-            @RequestParam(value = "alpha", required = false) Double alpha
+            @RequestParam(value = "alpha", required = false) Double alpha,
+            @RequestParam(value = "timeoutSeconds", required = false) Integer timeoutSeconds
     ) {
         long t0 = System.currentTimeMillis();
         LocalDate start = LocalDate.parse(startDate, STRICT_FMT);
         LocalDate end = LocalDate.parse(endDate, STRICT_FMT);
         double a = alpha == null ? 1.0 : alpha.doubleValue();
+        int timeout = timeoutSeconds == null ? 120 : timeoutSeconds.intValue();
         if (a < 0.0 || a > 1.0) throw new ValidationException(java.util.List.of(java.util.Map.of(
                 "row", 0,
                 "field", "alpha",
                 "message", "alpha deve essere tra 0 e 1"
         )));
-        log.info("[MILP] Request received. file={}, startDate={}, endDate={}, minProximityDays={}, alpha={}", file.getOriginalFilename(), start, end, minProximityDays, a);
+        if (timeout < 1 || timeout > 600) throw new ValidationException(java.util.List.of(java.util.Map.of(
+                "row", 0,
+                "field", "timeoutSeconds",
+                "message", "timeoutSeconds deve essere tra 1 e 600"
+        )));
+        log.info("[MILP] Request received. file={}, startDate={}, endDate={}, minProximityDays={}, alpha={}, timeoutSeconds={}", file.getOriginalFilename(), start, end, minProximityDays, a, timeout);
         ParseResult parsed = excelParsingService.parse(getStream(file), start, end);
-        MilpSchedulerService.ScheduleResult res = milpSchedulerService.schedule(parsed.rows, parsed.pesanti, start, end, minProximityDays, a);
+        MilpSchedulerService.ScheduleResult res = milpSchedulerService.schedule(parsed.rows, parsed.pesanti, start, end, minProximityDays, a, timeout);
         byte[] xls = excelOutputService.buildOutput(res.rowsMutated, res.assignment, res.pesiPerMese, res.eventiPerMese);
         long dt = System.currentTimeMillis() - t0;
         log.info("[MILP] Completed. rows={}, durationMs={}", parsed.rows.size(), dt);

@@ -122,10 +122,10 @@ public class ExcelParsingService {
                     }
                 }
 
-                // squadre escluse: solo virgola, spazi tollerati
+                // squadre escluse: punto e virgola come separatore, spazi tollerati
                 Set<Integer> escluse = new LinkedHashSet<>();
                 if (escluseStr != null && !escluseStr.isEmpty()) {
-                    String[] parts = escluseStr.split(",");
+                    String[] parts = escluseStr.split(";");
                     for (String p : parts) {
                         String t = p.trim();
                         if (t.isEmpty()) continue;

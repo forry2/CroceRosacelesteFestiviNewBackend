@@ -35,9 +35,10 @@ public class MilpSchedulerService {
                                    LocalDate start,
                                    LocalDate end,
                                    int minProximityDays,
-                                   double alpha) {
+                                   double alpha,
+                                   int timeoutSeconds) {
         Loader.loadNativeLibraries();
-        log.info("[MILP] Building model. rows={} heavy={} period=[{}..{}]", rows.size(), pesanti.size(), start, end);
+        log.info("[MILP] Building model. rows={} heavy={} period=[{}..{}] timeout={}s", rows.size(), pesanti.size(), start, end, timeoutSeconds);
 
         BuiltModel bm = buildUnits(rows, pesanti, start, end);
         if (log.isDebugEnabled()) log.debug("[MILP] Units built: {}", bm.units.size());
@@ -64,10 +65,12 @@ public class MilpSchedulerService {
         }
         if (!violations.isEmpty()) throw new ValidationException(violations);
 
+        if (log.isDebugEnabled()) log.debug("[MILP] Creating solver SCIP...");
         MPSolver solver = MPSolver.createSolver("SCIP");
         if (solver == null) {
             throw new RuntimeException("Solver SCIP non disponibile");
         }
+        if (log.isDebugEnabled()) log.debug("[MILP] Solver SCIP created successfully");
 
         int U = bm.units.size();
         int T = 10;
@@ -88,12 +91,14 @@ public class MilpSchedulerService {
         }
         MPVariable L = solver.makeIntVar(0, MPSolver.infinity(), "L");
         MPVariable Emax = solver.makeIntVar(0, MPSolver.infinity(), "Emax");
+        if (log.isDebugEnabled()) log.debug("[MILP] Variables created: {} units × {} teams", U, T);
 
         // Exactly one team per unit
         for (int u = 0; u < U; u++) {
             MPConstraint c = solver.makeConstraint(1, 1, "one_team_u" + u);
             for (int t = 1; t <= T; t++) c.setCoefficient(x[u][t], 1);
         }
+        if (log.isDebugEnabled()) log.debug("[MILP] Added one-team-per-unit constraints");
 
         // Apply exclusions, forzate, proximity
         for (int u = 0; u < U; u++) {
@@ -125,6 +130,7 @@ public class MilpSchedulerService {
             }
             if (log.isTraceEnabled()) log.trace("[MILP] Constraints for unit {} set (exclusions/proximity/forzate)", u);
         }
+        if (log.isDebugEnabled()) log.debug("[MILP] Added exclusions/proximity/forzate constraints");
 
         // Same-day MP vs SN different teams
         // Build map date -> MP unit index and SN unit index if present
@@ -211,13 +217,26 @@ public class MilpSchedulerService {
         obj.setCoefficient(L, wL * scale);
         obj.setCoefficient(Emax, wE * scale);
         obj.setMinimization();
+        
+        // Timeout configurabile dall'utente
+        solver.setTimeLimit(timeoutSeconds * 1000L);
+        if (log.isDebugEnabled()) log.debug("[MILP] Model built complete. Starting solve with {}s timeout...", timeoutSeconds);
 
         long t0 = System.currentTimeMillis();
         MPSolver.ResultStatus status = solver.solve();
         long dt = System.currentTimeMillis() - t0;
         log.info("[MILP] Solve status={}, durationMs={}", status, dt);
+        
         if (!(status == MPSolver.ResultStatus.OPTIMAL || status == MPSolver.ResultStatus.FEASIBLE)) {
-            addV(violations, 0, "__assign__", "Impossibile assegnare tutti i festivi rispettando i vincoli");
+            String reason = buildInfeasibilityReason(status, bm, minProximityDays);
+            log.warn("[MILP] Infeasible. Status={}, reason={}", status, reason);
+            // Popola errorMessage in tutte le righe (errore globale)
+            for (FestivoUnit u : bm.units) {
+                for (FestivoInputRow row : u.rows) {
+                    row.errorMessage = "MILP infeasible: " + reason;
+                }
+            }
+            addV(violations, 0, "__assign__", reason);
             throw new ValidationException(violations);
         }
 
@@ -249,6 +268,63 @@ public class MilpSchedulerService {
         if (!violations.isEmpty()) throw new ValidationException(violations);
 
         return new ScheduleResult(assignment, pesiPerMese, eventiPerMese, bm.mutatedRows);
+    }
+
+    private String buildInfeasibilityReason(MPSolver.ResultStatus status, BuiltModel bm, int minProximityDays) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Impossibile assegnare tutti i festivi. Status=").append(status).append(". ");
+        
+        if (status == MPSolver.ResultStatus.INFEASIBLE) {
+            sb.append("Il modello è INFEASIBLE (nessuna soluzione esiste). Possibili cause: ");
+            
+            // Analizza conflitti comuni
+            Map<String, Integer> festiviPerMese = new HashMap<>();
+            Map<Integer, Integer> pesantiPerAnno = new HashMap<>();
+            int maxFestiviInMese = 0;
+            String meseProblematico = "";
+            
+            for (FestivoUnit fu : bm.units) {
+                String monthKey = fu.year + "-" + String.format("%02d", fu.month);
+                festiviPerMese.put(monthKey, festiviPerMese.getOrDefault(monthKey, 0) + 1);
+                if (festiviPerMese.get(monthKey) > maxFestiviInMese) {
+                    maxFestiviInMese = festiviPerMese.get(monthKey);
+                    meseProblematico = monthKey;
+                }
+                
+                if (fu.pesante) {
+                    pesantiPerAnno.put(fu.year, pesantiPerAnno.getOrDefault(fu.year, 0) + 1);
+                }
+            }
+            
+            if (maxFestiviInMese > 10) {
+                sb.append("• Troppi festivi nel mese ").append(meseProblematico).append(" (").append(maxFestiviInMese)
+                  .append(" festivi, ma solo 10 squadre disponibili e vincolo max 1/mese). ");
+            }
+            
+            if (minProximityDays >= 3) {
+                sb.append("• minProximityDays=").append(minProximityDays).append(" potrebbe essere troppo alto per la densità di festivi. Prova a ridurlo a 1 o 2. ");
+            }
+            
+            // Controlla forzature
+            int forzate = (int) bm.units.stream().filter(u -> u.forzata.isPresent()).count();
+            if (forzate > 0) {
+                sb.append("• Ci sono ").append(forzate).append(" assegnazioni forzate che potrebbero essere in conflitto con i vincoli di prossimità o mensili. ");
+            }
+            
+            for (Map.Entry<Integer, Integer> e : pesantiPerAnno.entrySet()) {
+                if (e.getValue() > 10) {
+                    sb.append("• Anno ").append(e.getKey()).append(": ci sono ").append(e.getValue())
+                      .append(" festivi pesanti, ma solo 10 squadre (max 1 pesante/anno per squadra). ");
+                }
+            }
+            
+        } else if (status == MPSolver.ResultStatus.NOT_SOLVED) {
+            sb.append("Solver timeout (5 minuti) o errore interno. Il problema potrebbe essere troppo complesso o ci sono conflitti nei vincoli.");
+        } else {
+            sb.append("Status imprevisto: ").append(status);
+        }
+        
+        return sb.toString();
     }
 }
 

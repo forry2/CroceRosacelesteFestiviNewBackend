@@ -38,15 +38,26 @@ public class GreedySchedulerService {
         log.info("[GREEDY] Units built: {}", bm.units.size());
         List<Map<String, Object>> violations = new ArrayList<>();
 
-        // Sort: first MPB blocks by descending peso, then remaining by descending peso
+        // Sort: 1) forced assignments first, 2) then MPB blocks, 3) then by descending peso
         List<FestivoUnit> units = new ArrayList<>(bm.units);
         units.sort((a, b) -> {
+            // Priority 1: forced assignments come first
+            boolean af = a.forzata.isPresent();
+            boolean bf = b.forzata.isPresent();
+            if (af != bf) return af ? -1 : 1;
+            
+            // Priority 2: MPB blocks
             int ta = "MPB".equals(a.tipo) ? 0 : 1;
             int tb = "MPB".equals(b.tipo) ? 0 : 1;
             if (ta != tb) return Integer.compare(ta, tb);
+            
+            // Priority 3: descending peso
             return Integer.compare(b.peso, a.peso);
         });
-        log.debug("[GREEDY] Sorted units. First={} peso={}", units.isEmpty()?"-":units.get(0).id, units.isEmpty()?0:units.get(0).peso);
+        log.debug("[GREEDY] Sorted units. First={} peso={} forced={}", 
+            units.isEmpty()?"-":units.get(0).id, 
+            units.isEmpty()?0:units.get(0).peso,
+            units.isEmpty()?false:units.get(0).forzata.isPresent());
 
         Map<String, Integer> assignment = new HashMap<>();
         long[] pesi = new long[11]; // 1..10
@@ -91,8 +102,13 @@ public class GreedySchedulerService {
             // Same day MP/SN or other unit on same date must not conflict (assign later check)
 
             if (candidates.isEmpty()) {
-                addV(violations, u.rows.get(0).excelRowNumber, "__assign__", "Nessuna squadra idonea per il festivo");
-                log.warn("[GREEDY] No candidates for unit {}", u.id);
+                String reason = buildNoCandidatesReason(u, bm, minProximityDays, eventiPerMese, eventiQuestoAnnoPesanti);
+                addV(violations, u.rows.get(0).excelRowNumber, "__assign__", reason);
+                log.warn("[GREEDY] No candidates for unit {}. Reason: {}", u.id, reason);
+                // Popola errorMessage nelle righe corrispondenti
+                for (FestivoInputRow row : u.rows) {
+                    row.errorMessage = reason;
+                }
                 continue;
             }
 
@@ -135,8 +151,13 @@ public class GreedySchedulerService {
             }
 
             if (chosen == null) {
-                addV(violations, u.rows.get(0).excelRowNumber, "__assign__", "Conflitto con vincolo MP vs SN nello stesso giorno");
+                String reason = "Conflitto con vincolo MP vs SN nello stesso giorno";
+                addV(violations, u.rows.get(0).excelRowNumber, "__assign__", reason);
                 log.warn("[GREEDY] Day conflict for unit {}", u.id);
+                // Popola errorMessage nelle righe corrispondenti
+                for (FestivoInputRow row : u.rows) {
+                    row.errorMessage = reason;
+                }
                 continue;
             }
 
@@ -208,6 +229,89 @@ public class GreedySchedulerService {
         double EmaxPrime = totE == 0 ? 0.0 : (double)maxE / (double)totE;
         double score = alpha * Lprime + (1.0 - alpha) * EmaxPrime;
         return score;
+    }
+
+    private String buildNoCandidatesReason(FestivoUnit u, BuiltModel bm, int minProximityDays,
+                                           Map<Integer, int[]> eventiPerMese, int[] eventiQuestoAnnoPesanti) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Nessuna squadra disponibile per data=").append(u.dates.get(0)).append(" turno=").append(u.tipo).append(". ");
+        
+        List<Integer> excluded = new ArrayList<>();
+        List<Integer> proximityBlocked = new ArrayList<>();
+        List<Integer> monthlyBlocked = new ArrayList<>();
+        List<Integer> heavyBlocked = new ArrayList<>();
+        
+        // Analizza ogni squadra
+        for (int team = 1; team <= 10; team++) {
+            if (u.escluse.contains(team)) {
+                excluded.add(team);
+                continue;
+            }
+            if (u.forzata.isPresent() && u.forzata.get() != team) {
+                continue; // forzatura esclude altre squadre implicitamente
+            }
+            
+            // Proximity
+            boolean proxOk = true;
+            for (LocalDate d : u.dates) {
+                if (!proximityOk(team, d, minProximityDays)) {
+                    proxOk = false;
+                    break;
+                }
+            }
+            if (!proxOk) proximityBlocked.add(team);
+            
+            // Monthly
+            if (eventiPerMese.get(team)[u.month - 1] >= 1) monthlyBlocked.add(team);
+            
+            // Heavy
+            if (u.pesante && eventiQuestoAnnoPesanti[team] >= 1) heavyBlocked.add(team);
+        }
+        
+        // Costruisci messaggio dettagliato
+        sb.append("Vincoli violati: ");
+        
+        if (u.forzata.isPresent()) {
+            sb.append("• Forzata a squadra ").append(u.forzata.get()).append(" che però viola altri vincoli. ");
+        }
+        
+        if (!excluded.isEmpty()) {
+            sb.append("• Escluse: ").append(excluded).append(". ");
+        }
+        
+        if (!proximityBlocked.isEmpty()) {
+            sb.append("• Bloccate per prossimità (minProximityDays=").append(minProximityDays).append("): ")
+              .append(proximityBlocked).append(". ");
+        }
+        
+        if (!monthlyBlocked.isEmpty()) {
+            sb.append("• Già hanno un festivo nel mese ").append(u.month).append(": ")
+              .append(monthlyBlocked).append(". ");
+        }
+        
+        if (u.pesante && !heavyBlocked.isEmpty()) {
+            sb.append("• Già hanno un festivo pesante nell'anno ").append(u.year).append(": ")
+              .append(heavyBlocked).append(". ");
+        }
+        
+        // Squadre libere (non bloccate da nessun vincolo)
+        List<Integer> free = new ArrayList<>();
+        for (int team = 1; team <= 10; team++) {
+            if (!excluded.contains(team) && !proximityBlocked.contains(team) 
+                && !monthlyBlocked.contains(team) && !heavyBlocked.contains(team)
+                && (!u.forzata.isPresent() || u.forzata.get() == team)) {
+                free.add(team);
+            }
+        }
+        
+        if (free.isEmpty()) {
+            sb.append("Nessuna squadra rispetta tutti i vincoli. ");
+        } else {
+            sb.append("Squadre teoricamente libere: ").append(free).append(" (ma potrebbero violare vincoli MP/SN stesso giorno). ");
+        }
+        
+        sb.append("Suggerimenti: riduci minProximityDays, rimuovi esclusioni/forzature, o verifica densità festivi.");
+        return sb.toString();
     }
 }
 

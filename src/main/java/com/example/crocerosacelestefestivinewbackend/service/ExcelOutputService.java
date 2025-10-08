@@ -17,7 +17,7 @@ public class ExcelOutputService {
                               Map<Integer, long[]> pesiPerMese,
                               Map<Integer, int[]> eventiPerMese) {
         try (Workbook wb = new XSSFWorkbook()) {
-            // Sheet 1: lista-festivi (preserva col1-col7, aggiungi col8)
+            // Sheet 1: lista-festivi (preserva col1-col7, aggiungi col8 e col9)
             Sheet s = wb.createSheet("lista-festivi");
             Row header = s.createRow(0);
             header.createCell(0).setCellValue("");
@@ -28,6 +28,7 @@ public class ExcelOutputService {
             header.createCell(5).setCellValue("assegnazione forzata");
             header.createCell(6).setCellValue("squadre escluse");
             header.createCell(7).setCellValue("squadra assegnata");
+            header.createCell(8).setCellValue("note / errori");
 
             int r = 1;
             for (FestivoInputRow row : inputRows) {
@@ -41,6 +42,7 @@ public class ExcelOutputService {
                 rr.createCell(6).setCellValue(joinExcl(row.squadreEscluse));
                 Integer squad = assignment.get(row.date + "|" + row.turno);
                 rr.createCell(7).setCellValue(squad == null ? "" : String.valueOf(squad));
+                rr.createCell(8).setCellValue(row.errorMessage == null ? "" : row.errorMessage);
             }
 
             // Sheet 2: riepilogo-pesi
@@ -87,7 +89,7 @@ public class ExcelOutputService {
         if (excl == null || excl.isEmpty()) return "";
         StringBuilder sb = new StringBuilder();
         boolean first = true;
-        for (Integer i : excl) { if (!first) sb.append(", "); sb.append(i); first = false; }
+        for (Integer i : excl) { if (!first) sb.append(";"); sb.append(i); first = false; }
         return sb.toString();
     }
 
